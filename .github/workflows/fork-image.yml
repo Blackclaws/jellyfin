@@ -1,0 +1,103 @@
+# Builds the Docker image of this fork; not part of upstream Jellyfin.
+# Triggered by pushing a tag like 12.1-dev.1, see .fork/README.md.
+name: Fork Image
+
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+-dev.[0-9]+'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    name: Build and push image
+    if: github.repository_owner != 'jellyfin'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout build settings
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: settings
+          sparse-checkout: .fork
+
+      - name: Read build settings
+        id: settings
+        run: |
+          . settings/.fork/build.env
+          tag="${GITHUB_REF_NAME}"
+          if [[ "${tag}" != "${JELLYFIN_VERSION}-dev."* ]]; then
+            echo "::error::Tag ${tag} does not match this branch's Jellyfin version ${JELLYFIN_VERSION} (expected ${JELLYFIN_VERSION}-dev.N)"
+            exit 1
+          fi
+          web_repo="${GITHUB_REPOSITORY_OWNER}/jellyfin-web"
+          if ! git ls-remote --exit-code --tags "https://github.com/${web_repo}.git" "refs/tags/${tag}" > /dev/null; then
+            echo "::error::Tag ${tag} is missing in ${web_repo}; tag both repositories"
+            exit 1
+          fi
+          {
+            echo "tag=${tag}"
+            echo "web_repo=${web_repo}"
+            echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jellyfin"
+            echo "packaging_ref=${PACKAGING_REF}"
+            echo "dotnet_version=${DOTNET_VERSION}"
+            echo "nodejs_version=${NODEJS_VERSION}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout jellyfin-packaging
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: jellyfin/jellyfin-packaging
+          ref: ${{ steps.settings.outputs.packaging_ref }}
+          path: packaging
+
+      # Placed where jellyfin-packaging expects its jellyfin-server and jellyfin-web submodules
+      - name: Checkout server
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: packaging/jellyfin-server
+
+      - name: Checkout web
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.settings.outputs.web_repo }}
+          ref: ${{ steps.settings.outputs.tag }}
+          path: packaging/jellyfin-web
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: packaging
+          file: packaging/docker/Dockerfile
+          platforms: linux/amd64
+          build-args: |
+            PACKAGE_ARCH=amd64
+            DOTNET_ARCH=x64
+            IMAGE_ARCH=amd64
+            TARGET_ARCH=amd64
+            CONFIG=Release
+            JELLYFIN_VERSION=${{ steps.settings.outputs.tag }}
+            DOTNET_VERSION=${{ steps.settings.outputs.dotnet_version }}
+            NODEJS_VERSION=${{ steps.settings.outputs.nodejs_version }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.description=Jellyfin built from the ${{ github.repository_owner }} forks
+          tags: ${{ steps.settings.outputs.image }}:${{ steps.settings.outputs.tag }}
+          provenance: false
+          push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
