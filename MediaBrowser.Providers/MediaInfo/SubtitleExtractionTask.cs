@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Data.Enums;
+using Jellyfin.Database.Implementations.Enums;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.MediaEncoding;
@@ -76,6 +77,7 @@ public class SubtitleExtractionTask : IScheduledTask
     /// <inheritdoc />
     public async Task ExecuteAsync(IProgress<double> progress, CancellationToken cancellationToken)
     {
+        // Newest first, so recently added videos are ready before older ones on the first run.
         var query = new InternalItemsQuery
         {
             MediaTypes = [MediaType.Video],
@@ -84,6 +86,7 @@ public class SubtitleExtractionTask : IScheduledTask
             IsFolder = false,
             Recursive = true,
             IncludeOwnedItems = true,
+            OrderBy = [(ItemSortBy.DateCreated, SortOrder.Descending)],
             Limit = QueryPageLimit
         };
 
